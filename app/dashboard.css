@@ -156,6 +156,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .brief-type { display: inline-flex; align-items: center; border-radius: 999px; padding: 5px 8px; font-size: 10px; font-weight: 800; white-space: nowrap; }
 .brief-type.video { background: var(--blue-soft); color: var(--blue); }
 .brief-type.ai { background: var(--indigo-soft); color: var(--indigo); }
+.queue-meta-badge { display: inline-flex; align-items: center; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .source-sheet { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; white-space: nowrap; }
 .assignment-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-soft); }
 .assignment-summary span { min-width: 0; color: var(--ink); font-size: 11px; line-height: 1.35; }
@@ -187,6 +188,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .kanban-head { display: flex; align-items: center; justify-content: space-between; padding: 5px 4px 12px; font-size: 12px; font-weight: 800; }.kanban-head span { color: var(--muted); }
 .task-card { background: white; border: 1px solid var(--line); border-radius: 10px; padding: 13px; margin-bottom: 9px; cursor: pointer; box-shadow: 0 2px 5px rgba(20,35,30,.03); }
 .task-card:hover { border-color: #cbd5d1; transform: translateY(-1px); }.task-card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 8px; }.card-labels { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }.task-card h3 { margin: 0 0 6px; font-size: 13px; line-height: 1.35; }.task-card p { margin: 0 0 13px; color: var(--muted); font-size: 11px; line-height: 1.45; }.task-card-foot { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 10px; }
+.notify-task-button { width: 100%; margin-top: 12px; border-color: #111; color: #fff; background: #111; }
+.notify-task-button:hover { color: #fff; background: #000; }
 
 .team-hero { display: grid; grid-template-columns: 1.35fr .65fr; gap: 16px; margin-bottom: 18px; }
 .queue-card { border-radius: var(--radius-lg); padding: 24px; color: white; background: var(--nav); position: relative; overflow: hidden; }

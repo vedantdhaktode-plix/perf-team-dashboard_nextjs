@@ -13,7 +13,7 @@ export async function PUT(request) {
   try {
     const payload = await request.json();
     const result = await replaceState(
-      { tasks: payload.tasks, messages: payload.messages },
+      { tasks: payload.tasks, messages: payload.messages, notifications: payload.notifications },
       payload.baseRevision,
       payload.actor
     );

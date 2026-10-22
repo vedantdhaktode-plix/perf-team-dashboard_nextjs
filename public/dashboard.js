@@ -100,7 +100,7 @@ function referenceMarkup(reference) {
 function hydrate(base, serverState) {
   if (!serverState?.tasks || !serverState?.messages) return base;
   appState.serverRevision = Number(serverState.revision || 0);
-  return { ...base, tasks: serverState.tasks.map(prepareTask), messages: serverState.messages };
+  return { ...base, tasks: serverState.tasks.map(prepareTask), messages: serverState.messages, notifications: serverState.notifications || base.notifications || [] };
 }
 
 function persist() {
@@ -120,6 +120,7 @@ function applyServerState(serverState, shouldRender = true) {
   if (!serverState?.tasks || !appState.data) return;
   appState.data.tasks = serverState.tasks.map(prepareTask);
   appState.data.messages = serverState.messages || [];
+  appState.data.notifications = serverState.notifications || appState.data.notifications || [];
   appState.serverRevision = Number(serverState.revision || appState.serverRevision);
   appState.syncStatus = "synced";
   if (shouldRender) render(); else updateSyncIndicator();
@@ -152,7 +153,8 @@ async function flushPersistQueue() {
           baseRevision: appState.serverRevision,
           actor: currentUser()?.name || appState.currentUserId,
           tasks: appState.data.tasks,
-          messages: appState.data.messages
+          messages: appState.data.messages,
+          notifications: appState.data.notifications
         })
       });
       const result = await response.json();
@@ -341,6 +343,26 @@ function canAssignContentOwner() { return ["content", "administrator"].includes(
 function roleLabel(role) { return ({ content: "Content Team", edit: "Video team", brand: "Brand", performance: "Perf team", administrator: "Administrator" })[role] || role; }
 function categoryAssignment(category) { return CATEGORY_ASSIGNMENTS[String(category || "").trim().toLowerCase()] || { scriptOwnerId: null, brandApproverIds: [] }; }
 function assignedNames(ids = []) { return ids.map(id => user(id)?.name).filter(Boolean); }
+function notificationIsForCurrentUser(notification) { return !notification.recipientIds?.length || notification.recipientIds.includes(appState.currentUserId); }
+function notificationIsRead(notification) { return Boolean(notification.read || notification.readByIds?.includes(appState.currentUserId)); }
+function currentUserNotifications() { return (appState.data.notifications || []).filter(notificationIsForCurrentUser); }
+function notificationTime(notification) { return String(notification.at || "").includes("T") ? formatTime(notification.at) : notification.at; }
+
+function taskContributorIds(task) {
+  const ids = new Set([
+    task.scriptOwnerId,
+    task.contentOwnerId,
+    ...(task.brandApproverIds || []),
+    task.editorId,
+    task.publisherId
+  ].filter(Boolean));
+  const contributorNames = new Set((task.activity || []).map(item => String(item.actor || "").trim().toLowerCase()).filter(Boolean));
+  appState.data.users.forEach(person => {
+    if (contributorNames.has(person.name.toLowerCase())) ids.add(person.id);
+  });
+  appState.data.messages.filter(message => message.taskId === task.id).forEach(message => ids.add(message.authorId));
+  return [...ids].filter(id => user(id));
+}
 function assignmentMarkup(task, compact = false) {
   const scriptOwner = user(task.scriptOwnerId)?.name || "Unassigned";
   const approvers = assignedNames(task.brandApproverIds);
@@ -420,7 +442,7 @@ function navButton(id, label, ico, count = 0) {
 
 function topbarMarkup() {
   const person = currentUser();
-  const unread = appState.data.notifications.filter(n => !n.read).length;
+  const unread = currentUserNotifications().filter(notification => !notificationIsRead(notification)).length;
   return `<header class="topbar">
     <button class="icon-button mobile-menu" data-mobile-menu aria-label="Open menu">${icon("menu")}</button>
     <label class="search">${icon("search")}<input id="global-search" type="search" value="${escapeHtml(appState.search)}" placeholder="Search tasks, campaigns, or products" aria-label="Global search"><kbd>⌘ K</kbd></label>
@@ -528,7 +550,11 @@ function boardMarkup(tasks) {
     const searchKey = `${appState.page}:${state}`;
     const query = String(appState.stageSearch[searchKey] || "").toLowerCase();
     const visibleItems = items.filter(task => [task.id, task.title, task.product, task.category, task.contentType, user(task.scriptOwnerId)?.name].join(" ").toLowerCase().includes(query));
-    return `<section class="kanban-column"><div class="kanban-head">${label}<span>${visibleItems.length}${query ? `/${items.length}` : ""}</span></div><label class="stage-search">${icon("search")}<input type="search" data-stage-search="${searchKey}" value="${escapeHtml(appState.stageSearch[searchKey] || "")}" placeholder="Search ${escapeHtml(label.toLowerCase())}" aria-label="Search ${escapeHtml(label)}"></label><div class="stage-cards">${visibleItems.map(task => `<article class="task-card" data-task="${task.id}"><div class="task-card-top"><div class="card-labels"><span class="priority ${task.priority}">${task.priority}</span>${briefTypeMarkup(task)}</div>${actualTimeMarkup(task)}</div><h3>${escapeHtml(task.title)}</h3><p>${escapeHtml(task.contentType)} · ${escapeHtml(task.product)}</p>${assignmentMarkup(task, true)}${taskAssetsMarkup(task)}<div class="task-card-foot"><span>${task.id}</span>${editorQueueOwnerMarkup(task)}</div></article>`).join("") || `<div class="empty"><span>${items.length ? "No matching tasks" : "No tasks"}</span></div>`}</div></section>`;
+    const cards = visibleItems.map(task => {
+      const notifyButton = task.state === "published" ? `<button type="button" class="button notify-task-button" data-notify-task="${task.id}">${icon("bell")} Notify</button>` : "";
+      return `<article class="task-card" data-task="${task.id}"><div class="task-card-top"><div class="card-labels"><span class="priority ${task.priority}">${task.priority}</span><span class="priority ${task.priority} queue-meta-badge" title="Brief type">${escapeHtml(briefTypeMeta(task).label)}</span><span class="priority ${task.priority} queue-meta-badge" title="Content type">${escapeHtml(task.contentType)}</span></div>${actualTimeMarkup(task)}</div><h3>${escapeHtml(task.title)}</h3><p>${escapeHtml(task.product)}</p>${assignmentMarkup(task, true)}${taskAssetsMarkup(task)}<div class="task-card-foot"><span>${task.id}</span>${editorQueueOwnerMarkup(task)}</div>${notifyButton}</article>`;
+    }).join("");
+    return `<section class="kanban-column"><div class="kanban-head">${label}<span>${visibleItems.length}${query ? `/${items.length}` : ""}</span></div><label class="stage-search">${icon("search")}<input type="search" data-stage-search="${searchKey}" value="${escapeHtml(appState.stageSearch[searchKey] || "")}" placeholder="Search ${escapeHtml(label.toLowerCase())}" aria-label="Search ${escapeHtml(label)}"></label><div class="stage-cards">${cards || `<div class="empty"><span>${items.length ? "No matching tasks" : "No tasks"}</span></div>`}</div></section>`;
   }).join("")}</div>`;
 }
 
@@ -601,7 +627,7 @@ function mainMarkup() {
 }
 
 function popoverMarkup() {
-  if (appState.popover === "notifications") return `<div class="popover" role="dialog" aria-label="Notifications"><div class="popover-head"><strong>Notifications</strong><button class="button small" data-mark-read>Mark all read</button></div>${appState.data.notifications.map(n => `<article class="notification ${n.read ? "read" : ""}"><i></i><div><strong>${escapeHtml(n.title)}</strong><span>${escapeHtml(n.detail)}</span></div><time>${n.at}</time></article>`).join("")}</div>`;
+  if (appState.popover === "notifications") { const notifications = currentUserNotifications(); return `<div class="popover" role="dialog" aria-label="Notifications"><div class="popover-head"><strong>Notifications</strong><button class="button small" data-mark-read>Mark all read</button></div>${notifications.length ? notifications.map(n => `<article class="notification ${notificationIsRead(n) ? "read" : ""}"><i></i><div><strong>${escapeHtml(n.title)}</strong><span>${escapeHtml(n.detail)}</span></div><time>${escapeHtml(notificationTime(n))}</time></article>`).join("") : '<div class="empty"><span>No notifications</span></div>'}</div>`; }
   if (appState.popover === "roles") return `<div class="popover role-menu" role="dialog" aria-label="Switch simulated user"><div class="popover-head"><strong>View as</strong><button class="button small" data-reset>Reset demo</button></div>${appState.data.users.map(person => `<button class="role-option ${person.id === appState.currentUserId ? "active" : ""}" data-role-user="${person.id}">${avatarMarkup(person)}<span><strong>${escapeHtml(person.name)}</strong><span>${escapeHtml(roleLabel(person.role))}</span></span></button>`).join("")}</div>`;
   return "";
 }
@@ -635,6 +661,9 @@ function actionButtons(task) {
   if (appState.page === "performance" && ["ready_for_performance", "publishing_in_progress", "publishing_failed"].includes(task.state)) {
     if (isAllowed("start_publishing") || isAllowed("record_publish_result")) buttons.push(transitionButton("published", "Go Live", "go_live"));
     if (isAllowed("record_publish_result")) buttons.push(changesButton("changes_requested", "Video Team"));
+  }
+  if (appState.page === "performance" && task.state === "published") {
+    buttons.push(`<button type="button" class="button primary" data-notify-task="${task.id}">${icon("bell")} Notify</button>`);
   }
   return buttons.join("");
 }
@@ -775,6 +804,7 @@ function render() {
 function bindEvents() {
   document.querySelectorAll("[data-nav]").forEach(el => el.addEventListener("click", () => { appState.page = el.dataset.nav; appState.popover = null; appState.sidebarOpen = false; render(); }));
   document.querySelectorAll("[data-task]").forEach(el => el.addEventListener("click", () => { appState.selectedTaskId = el.dataset.task; appState.detailTab = "overview"; render(); }));
+  document.querySelectorAll("[data-notify-task]").forEach(el => el.addEventListener("click", event => { event.stopPropagation(); notifyTaskContributors(el.dataset.notifyTask); }));
   document.querySelectorAll("[data-close-drawer]").forEach(el => el.addEventListener("click", () => { appState.selectedTaskId = null; render(); }));
   document.querySelectorAll("[data-detail-tab]").forEach(el => el.addEventListener("click", () => { appState.detailTab = el.dataset.detailTab; render(); }));
   document.querySelectorAll("[data-view]").forEach(el => el.addEventListener("click", () => { appState.view = el.dataset.view; render(); }));
@@ -820,7 +850,7 @@ function bindEvents() {
   document.querySelector("[data-close-source-preview]")?.addEventListener("click", () => { appState.sheetPreview = null; render(); });
   document.querySelectorAll("[data-transition]").forEach(el => el.addEventListener("click", () => transitionTask(el.dataset.taskId, el.dataset.transition, el.dataset.special)));
   document.querySelector("[data-mobile-menu]")?.addEventListener("click", () => { appState.sidebarOpen = !appState.sidebarOpen; render(); });
-  document.querySelector("[data-mark-read]")?.addEventListener("click", () => { appState.data.notifications.forEach(n => n.read = true); appState.popover = null; render(); });
+  document.querySelector("[data-mark-read]")?.addEventListener("click", () => { currentUserNotifications().forEach(notification => { notification.readByIds = [...new Set([...(notification.readByIds || []), appState.currentUserId])]; }); appState.popover = null; persist(); render(); });
   document.querySelector("[data-reset]")?.addEventListener("click", async () => {
     const response = await fetch("/api/state", { method: "DELETE", headers: { "x-perf-actor": currentUser()?.name || appState.currentUserId } });
     if (!response.ok) return showToast("Could not reset backend data");
@@ -947,6 +977,36 @@ function transitionTask(taskId, nextState, special = "") {
   task.activity.unshift({ at: task.updatedAt, actor: currentUser().name, team: currentUser().role === "content" ? "Content Team" : currentUser().role[0].toUpperCase() + currentUser().role.slice(1), text: specialActivity[special] || `Changed status from ${stateMeta(previous).label} to ${stateMeta(nextState).label}.` });
   const specialToast = { brand_handoff: "Requirements sent to Content Team", approval_handoff: "Video approved and sent to Perf team", script_approved: "Script approved and sent to Video Team", script_changes: "Script returned to Content Team", script_submitted: "Script sent to Brand approval", script_link_submitted: "Script sent to Brand Team approval", video_handoff: "Video sent to Brand Team approval", changes_to_brand: "Change request sent to Brand Team", changes_to_content: "Change request sent to Content Team", changes_to_video: "Change request sent to Video Team", go_live: "Status changed to Live" };
   persist(); render(); showToast(specialToast[special] || "Task updated", stateMeta(nextState).label);
+}
+
+function notifyTaskContributors(taskId) {
+  const task = appState.data.tasks.find(item => item.id === taskId);
+  if (!task || task.state !== "published") return showToast("Notifications are available for Live tasks only");
+  const recipientIds = taskContributorIds(task);
+  if (!recipientIds.length) return showToast("No task contributors found");
+  const recipients = recipientIds.map(id => user(id));
+  const teams = [...new Set(recipients.map(person => roleLabel(person.role)))];
+  const sentAt = new Date().toISOString();
+  appState.data.notifications.unshift({
+    id: `note-${task.id}-${Date.now()}`,
+    taskId: task.id,
+    title: `${task.title} is Live`,
+    detail: `${currentUser().name} notified ${recipients.length} contributor${recipients.length === 1 ? "" : "s"} across ${teams.join(", ")}.`,
+    at: sentAt,
+    read: false,
+    readByIds: recipientIds.includes(appState.currentUserId) ? [appState.currentUserId] : [],
+    recipientIds
+  });
+  task.activity.unshift({
+    at: sentAt,
+    actor: currentUser().name,
+    team: roleLabel(currentUser().role),
+    text: `Sent a Live notification to ${recipients.map(person => person.name).join(", ")}.`
+  });
+  task.updatedAt = sentAt;
+  persist();
+  render();
+  showToast("Notification sent", `${recipients.length} contributor${recipients.length === 1 ? "" : "s"} across ${teams.length} team${teams.length === 1 ? "" : "s"}`);
 }
 
 function submitChat(event) {
