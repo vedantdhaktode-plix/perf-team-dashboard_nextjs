@@ -1,7 +1,5 @@
 import { getTaskDocument, saveTaskDocument } from "./pdf-store.js";
 
-const STORE_KEY = "brand-perf-edit-workflow-v3";
-const STORE_VERSION = 4;
 const DEFAULT_EDITOR_ID = "usr-other-editor";
 
 const BRIEF_TYPES = {
@@ -69,8 +67,13 @@ const appState = {
   filters: { priority: "all", state: "all", briefType: "video" }, currentUserId: "usr-admin",
   selectedTaskId: null, detailTab: "overview", activeChannelId: "channel-general",
   popover: null, modal: null, contentBriefTaskId: null, changeRequest: null, sidebarOpen: false, sheetPreview: null,
-  stageSearch: {}
+  stageSearch: {}, serverRevision: 0, syncStatus: "connecting", realtimeConnected: false
 };
+
+let persistRunning = false;
+let persistRequested = false;
+let pendingRemoteRevision = 0;
+let realtimeSource = null;
 
 function escapeHtml(value = "") {
   return String(value).replace(/[&<>'"]/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;"}[char]));
@@ -94,16 +97,108 @@ function referenceMarkup(reference) {
   return `<a class="chip reference-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(url)}">${icon("link")} ${escapeHtml(label)} ↗</a>`;
 }
 
-function hydrate(base) {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORE_KEY));
-    if (saved?.fixtureVersion === STORE_VERSION) return { ...base, tasks: (saved.tasks || base.tasks).map(prepareTask), messages: saved.messages || base.messages };
-  } catch (_) {}
-  return base;
+function hydrate(base, serverState) {
+  if (!serverState?.tasks || !serverState?.messages) return base;
+  appState.serverRevision = Number(serverState.revision || 0);
+  return { ...base, tasks: serverState.tasks.map(prepareTask), messages: serverState.messages };
 }
 
 function persist() {
-  localStorage.setItem(STORE_KEY, JSON.stringify({ fixtureVersion: STORE_VERSION, tasks: appState.data.tasks, messages: appState.data.messages }));
+  persistRequested = true;
+  if (!persistRunning) flushPersistQueue();
+}
+
+function updateSyncIndicator() {
+  const indicator = document.querySelector("[data-sync-status]");
+  if (!indicator) return;
+  const labels = { connecting: "Connecting", saving: "Saving", synced: "Live backend", error: "Sync issue" };
+  indicator.className = `sync-status ${appState.syncStatus}`;
+  indicator.innerHTML = `<i></i>${labels[appState.syncStatus] || "Backend"}`;
+}
+
+function applyServerState(serverState, shouldRender = true) {
+  if (!serverState?.tasks || !appState.data) return;
+  appState.data.tasks = serverState.tasks.map(prepareTask);
+  appState.data.messages = serverState.messages || [];
+  appState.serverRevision = Number(serverState.revision || appState.serverRevision);
+  appState.syncStatus = "synced";
+  if (shouldRender) render(); else updateSyncIndicator();
+}
+
+async function refreshFromServer() {
+  try {
+    const response = await fetch("/api/state", { cache: "no-store" });
+    if (!response.ok) throw new Error("Backend state request failed.");
+    const serverState = await response.json();
+    if (Number(serverState.revision || 0) >= appState.serverRevision) applyServerState(serverState);
+  } catch (error) {
+    appState.syncStatus = "error";
+    updateSyncIndicator();
+    showToast("Live sync unavailable", error.message);
+  }
+}
+
+async function flushPersistQueue() {
+  persistRunning = true;
+  while (persistRequested) {
+    persistRequested = false;
+    appState.syncStatus = "saving";
+    updateSyncIndicator();
+    try {
+      const response = await fetch("/api/state", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          baseRevision: appState.serverRevision,
+          actor: currentUser()?.name || appState.currentUserId,
+          tasks: appState.data.tasks,
+          messages: appState.data.messages
+        })
+      });
+      const result = await response.json();
+      if (response.status === 409) {
+        applyServerState(result.state);
+        showToast("Updated from another session", "Your view was refreshed before saving again.");
+        continue;
+      }
+      if (!response.ok) throw new Error(result.error || "Backend update failed.");
+      appState.serverRevision = result.revision;
+      appState.syncStatus = "synced";
+      updateSyncIndicator();
+    } catch (error) {
+      appState.syncStatus = "error";
+      updateSyncIndicator();
+      showToast("Could not save to backend", error.message);
+      break;
+    }
+  }
+  persistRunning = false;
+  if (pendingRemoteRevision > appState.serverRevision) {
+    pendingRemoteRevision = 0;
+    refreshFromServer();
+  }
+}
+
+function connectRealtime() {
+  realtimeSource?.close();
+  realtimeSource = new EventSource("/api/events");
+  realtimeSource.onopen = () => {
+    appState.realtimeConnected = true;
+    if (!persistRunning) appState.syncStatus = "synced";
+    updateSyncIndicator();
+  };
+  realtimeSource.onerror = () => {
+    appState.realtimeConnected = false;
+    appState.syncStatus = "connecting";
+    updateSyncIndicator();
+  };
+  realtimeSource.onmessage = event => {
+    const payload = JSON.parse(event.data);
+    const revision = Number(payload.revision || 0);
+    if (!["state.changed", "state.reset"].includes(payload.type) || revision <= appState.serverRevision) return;
+    if (persistRunning) pendingRemoteRevision = Math.max(pendingRemoteRevision, revision);
+    else refreshFromServer();
+  };
 }
 
 function integrateWorkbookData(base, workbookData) {
@@ -330,6 +425,7 @@ function topbarMarkup() {
     <button class="icon-button mobile-menu" data-mobile-menu aria-label="Open menu">${icon("menu")}</button>
     <label class="search">${icon("search")}<input id="global-search" type="search" value="${escapeHtml(appState.search)}" placeholder="Search tasks, campaigns, or products" aria-label="Global search"><kbd>⌘ K</kbd></label>
     <div class="top-actions">
+      <span class="sync-status ${appState.syncStatus}" data-sync-status><i></i>${appState.syncStatus === "synced" ? "Live backend" : appState.syncStatus === "saving" ? "Saving" : appState.syncStatus === "error" ? "Sync issue" : "Connecting"}</span>
       <button class="icon-button" data-toast="Help center is not connected in this prototype" aria-label="Help">${icon("help")}</button>
       <button class="icon-button" data-popover="notifications" aria-label="Notifications">${icon("bell")}${unread ? '<span class="notification-dot"></span>' : ""}</button>
       <button class="user-button" data-popover="roles" aria-label="Current user and role menu">${avatarMarkup(person)}<span class="user-copy"><strong>${escapeHtml(person.name)}</strong><span>${escapeHtml(roleLabel(person.role))}</span></span><span>⌄</span></button>
@@ -365,7 +461,13 @@ function overviewMarkup() {
 }
 
 function filtersMarkup(tasks) {
-  const stateOptions = Object.entries(appState.workflow.states).map(([key,meta]) => `<option value="${key}" ${appState.filters.state === key ? "selected" : ""}>${meta.label}</option>`).join("");
+  const performanceStates = [
+    ["ready_for_performance", "Ready for live"],
+    ["published", "Live"],
+    ["publishing_in_progress", "Rework"],
+    ["publishing_failed", "Failed / On hold"]
+  ];
+  const stateOptions = performanceStates.map(([key, label]) => `<option value="${key}" ${appState.filters.state === key ? "selected" : ""}>${label}</option>`).join("");
   return `<div class="toolbar"><div class="segmented brief-queue-tabs" aria-label="Choose brief queue"><button class="${appState.filters.briefType === "video" ? "active" : ""}" data-brief-queue="video">Video brief queue</button><button class="${appState.filters.briefType === "ai" ? "active" : ""}" data-brief-queue="ai">AI brief queue</button></div><select class="filter-control" data-filter="priority" aria-label="Filter by priority"><option value="all">All priorities</option>${["P0","P1","P2","R0"].map(p => `<option value="${p}" ${appState.filters.priority === p ? "selected" : ""}>${p}</option>`).join("")}</select><select class="filter-control" data-filter="state" aria-label="Filter by status"><option value="all">All statuses</option>${stateOptions}</select><span class="result-count">${tasks.length} ${appState.filters.briefType === "ai" ? "AI" : "video"} tasks</span><div class="segmented view-switch" aria-label="Choose task view"><button class="${appState.view === "table" ? "active" : ""}" data-view="table">${icon("list")} List</button><button class="${appState.view === "board" ? "active" : ""}" data-view="board">${icon("board")} Board</button></div></div>`;
 }
 
@@ -719,7 +821,11 @@ function bindEvents() {
   document.querySelectorAll("[data-transition]").forEach(el => el.addEventListener("click", () => transitionTask(el.dataset.taskId, el.dataset.transition, el.dataset.special)));
   document.querySelector("[data-mobile-menu]")?.addEventListener("click", () => { appState.sidebarOpen = !appState.sidebarOpen; render(); });
   document.querySelector("[data-mark-read]")?.addEventListener("click", () => { appState.data.notifications.forEach(n => n.read = true); appState.popover = null; render(); });
-  document.querySelector("[data-reset]")?.addEventListener("click", () => { localStorage.removeItem(STORE_KEY); location.reload(); });
+  document.querySelector("[data-reset]")?.addEventListener("click", async () => {
+    const response = await fetch("/api/state", { method: "DELETE", headers: { "x-perf-actor": currentUser()?.name || appState.currentUserId } });
+    if (!response.ok) return showToast("Could not reset backend data");
+    location.reload();
+  });
   const search = document.getElementById("global-search");
   search?.addEventListener("input", () => { appState.search = search.value; window.clearTimeout(search._timer); search._timer = window.setTimeout(render, 180); });
   document.getElementById("chat-form")?.addEventListener("submit", submitChat);
@@ -738,7 +844,9 @@ function validateDocument(file, required = false) {
 
 async function openDocument(taskId, documentId) {
   try {
-    const file = await getTaskDocument(taskId, documentId);
+    const task = appState.data.tasks.find(item => item.id === taskId);
+    const document = task?.documents?.find(item => item.id === documentId) || {};
+    const file = await getTaskDocument(taskId, documentId, document);
     if (!file) return showToast("Document unavailable", "Reattach it from the task details");
     const url = URL.createObjectURL(file);
     const opened = window.open(url, "_blank", "noopener,noreferrer");
@@ -762,7 +870,7 @@ function uploadScriptDocument(taskId) {
     const documentId = `doc-${task.id}-${Date.now()}`;
     try {
       await saveTaskDocument(taskId, documentId, file);
-      task.documents.push({ id: documentId, name: file.name, size: file.size, type: file.type || "application/octet-stream", purpose: "script", status: "pending", uploadedAt: new Date().toISOString(), local: true });
+      task.documents.push({ id: documentId, name: file.name, size: file.size, type: file.type || "application/octet-stream", purpose: "script", status: "pending", uploadedAt: new Date().toISOString(), storage: "server", local: true });
       transitionTask(taskId, "script_approval_pending", "script_submitted");
       showToast(wasRevision ? "Revised script sent to Brand" : "Script sent to Brand");
     } catch (storageError) {
@@ -928,7 +1036,7 @@ async function submitBrief(event) {
   const createdAt = new Date().toISOString();
   const id = `BPE-${maxId + 1}`;
   const documentId = documentFile?.size ? `doc-${id}-${Date.now()}` : null;
-  const documents = documentId ? [{ id: documentId, name: documentFile.name, size: documentFile.size, type: documentFile.type || "application/octet-stream", purpose: "additional", status: "provided", uploadedAt: createdAt, local: true }] : [];
+  const documents = documentId ? [{ id: documentId, name: documentFile.name, size: documentFile.size, type: documentFile.type || "application/octet-stream", purpose: "additional", status: "provided", uploadedAt: createdAt, storage: "server", local: true }] : [];
   const briefType = form.get("briefType") === "ai" ? "ai" : "video";
   const sourceSheet = BRIEF_TYPES[briefType].sheet;
   const category = form.get("category");
@@ -956,7 +1064,25 @@ document.addEventListener("keydown", event => {
   if (event.key === "Escape") { appState.selectedTaskId = null; appState.popover = null; appState.modal = null; render(); }
 });
 
-Promise.all([fetch("data/mock-data.json").then(r => r.json()), fetch("data/workbook-data.json").then(r => r.json()), fetch("config/workflow.json").then(r => r.json()), fetch("data/workbook-schema.json").then(r => r.json()), fetch("data/plix-products.json").then(r => r.json())])
-  .then(([data, workbookData, workflow, workbookSchema, plixProducts]) => { appState.data = hydrate({ ...integrateWorkbookData(data, workbookData), workbookSchema, plixProducts }); appState.data.workbookSchema = workbookSchema; appState.data.plixProducts = plixProducts; appState.workflow = workflow; render(); })
-  .catch(error => { document.getElementById("app").innerHTML = `<div class="loading-state"><span class="brand-mark">!</span><p>Could not load local fixtures. Serve this folder over HTTP.</p><code>${escapeHtml(error.message)}</code></div>`; });
+Promise.all([
+  fetch("data/mock-data.json").then(r => r.json()),
+  fetch("data/workbook-data.json").then(r => r.json()),
+  fetch("config/workflow.json").then(r => r.json()),
+  fetch("data/workbook-schema.json").then(r => r.json()),
+  fetch("data/plix-products.json").then(r => r.json()),
+  fetch("/api/state", { cache: "no-store" }).then(r => {
+    if (!r.ok) throw new Error("The backend state API is unavailable.");
+    return r.json();
+  })
+])
+  .then(([data, workbookData, workflow, workbookSchema, plixProducts, serverState]) => {
+    appState.data = hydrate({ ...integrateWorkbookData(data, workbookData), workbookSchema, plixProducts }, serverState);
+    appState.data.workbookSchema = workbookSchema;
+    appState.data.plixProducts = plixProducts;
+    appState.workflow = workflow;
+    appState.syncStatus = "synced";
+    render();
+    connectRealtime();
+  })
+  .catch(error => { document.getElementById("app").innerHTML = `<div class="loading-state"><span class="brand-mark">!</span><p>Could not load the full-stack dashboard.</p><code>${escapeHtml(error.message)}</code></div>`; });
 

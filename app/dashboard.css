@@ -71,6 +71,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .search input { width: 100%; border: 1px solid var(--line); background: var(--surface-soft); border-radius: 10px; padding: 11px 42px; color: var(--ink); }
 .search kbd { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 5px; padding: 2px 6px; color: var(--muted); background: white; font-size: 11px; }
 .top-actions { margin-left: auto; display: flex; align-items: center; gap: 9px; }
+.sync-status { display: inline-flex; align-items: center; gap: 7px; min-height: 32px; padding: 0 11px; border: 1px solid var(--line); border-radius: 999px; background: #fff; color: var(--muted); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.sync-status i { width: 7px; height: 7px; border-radius: 50%; background: #a6a6a6; }
+.sync-status.synced i { background: #45a375; box-shadow: 0 0 0 3px #e8f6ef; }
+.sync-status.saving i, .sync-status.connecting i { background: #d29a39; animation: sync-pulse 1.2s ease-in-out infinite; }
+.sync-status.error { color: #9b3228; border-color: #edc8c3; background: #fff6f5; }
+.sync-status.error i { background: #c95749; }
+@keyframes sync-pulse { 50% { opacity: .35; transform: scale(.8); } }
 .icon-button { width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 10px; background: white; display: grid; place-items: center; cursor: pointer; position: relative; }
 .icon-button svg { width: 18px; }
 .notification-dot { position: absolute; right: 8px; top: 7px; width: 7px; height: 7px; border-radius: 50%; background: #c4554f; border: 2px solid white; }

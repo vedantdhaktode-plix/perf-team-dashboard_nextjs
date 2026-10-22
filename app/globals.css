@@ -9,3 +9,9 @@ body {
 .workflow-step button[aria-disabled="true"] {
   cursor: default;
 }
+
+@media (max-width: 760px) {
+  .sync-status {
+    display: none;
+  }
+}

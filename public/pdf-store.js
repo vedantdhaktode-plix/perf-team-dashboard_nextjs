@@ -1,57 +1,26 @@
-const DB_NAME = "brand-perf-edit-prototype";
-const DB_VERSION = 2;
-const STORE_NAME = "script-pdfs";
-const DOCUMENT_STORE = "task-documents";
-
-function openDatabase() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
-      const database = request.result;
-      if (!database.objectStoreNames.contains(STORE_NAME)) database.createObjectStore(STORE_NAME);
-      if (!database.objectStoreNames.contains(DOCUMENT_STORE)) database.createObjectStore(DOCUMENT_STORE);
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error("Could not open local PDF storage."));
-  });
-}
-
 export async function saveTaskDocument(taskId, documentId, file) {
-  const database = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(DOCUMENT_STORE, "readwrite");
-    transaction.objectStore(DOCUMENT_STORE).put(file, `${taskId}:${documentId}`);
-    transaction.oncomplete = () => { database.close(); resolve(); };
-    transaction.onerror = () => { database.close(); reject(transaction.error || new Error("Could not save the document locally.")); };
-  });
+  const form = new FormData();
+  form.append("taskId", taskId);
+  form.append("documentId", documentId);
+  form.append("file", file, file.name);
+  const response = await fetch("/api/files", { method: "POST", body: form });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "Could not upload the document.");
+  return result;
 }
 
-export async function getTaskDocument(taskId, documentId) {
-  const database = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(DOCUMENT_STORE, "readonly");
-    const request = transaction.objectStore(DOCUMENT_STORE).get(`${taskId}:${documentId}`);
-    request.onsuccess = () => { database.close(); resolve(request.result || null); };
-    request.onerror = () => { database.close(); reject(request.error || new Error("Could not read the document.")); };
+export async function getTaskDocument(taskId, documentId, metadata = {}) {
+  const query = new URLSearchParams({
+    taskId,
+    documentId,
+    name: metadata.name || "document",
+    type: metadata.type || "application/octet-stream"
   });
+  const response = await fetch(`/api/files?${query}`, { cache: "no-store" });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error("Could not download the document.");
+  return response.blob();
 }
 
-export async function saveScriptPdf(taskId, file) {
-  const database = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, "readwrite");
-    transaction.objectStore(STORE_NAME).put(file, taskId);
-    transaction.oncomplete = () => { database.close(); resolve(); };
-    transaction.onerror = () => { database.close(); reject(transaction.error || new Error("Could not save the PDF locally.")); };
-  });
-}
-
-export async function getScriptPdf(taskId) {
-  const database = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, "readonly");
-    const request = transaction.objectStore(STORE_NAME).get(taskId);
-    request.onsuccess = () => { database.close(); resolve(request.result || null); };
-    request.onerror = () => { database.close(); reject(request.error || new Error("Could not read the PDF.")); };
-  });
-}
+export const saveScriptPdf = (taskId, file) => saveTaskDocument(taskId, `legacy-${taskId}`, file);
+export const getScriptPdf = taskId => getTaskDocument(taskId, `legacy-${taskId}`);

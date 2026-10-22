@@ -12,13 +12,33 @@ npm run start
 
 Open `http://localhost:4317`. For hot reload, use `npm run dev`; it uses the same port.
 
+## Full-stack architecture
+
+- Next.js serves both the dashboard and Node.js API routes.
+- Server state is stored in `.data/perf-state.json` with atomic writes and optimistic revision checks.
+- Server-Sent Events at `/api/events` update other open browsers immediately after scripts, approvals, links, or statuses change.
+- Script and supporting-file uploads are stored under `.data/uploads` and streamed through `/api/files`.
+- Workflow transitions and Google Docs / Drive link hosts are validated again on the server.
+- The header displays the live connection state: Connecting, Saving, Live backend, or Sync issue.
+
+### API routes
+
+- `GET /api/state` — current tasks, approvals, messages, links, and revision.
+- `PUT /api/state` — persist an optimistic-concurrency snapshot.
+- `DELETE /api/state` — reset server state to the workbook seed.
+- `GET /api/events` — real-time SSE change stream.
+- `POST /api/files` — upload scripts and supporting video documents, up to 20 MB.
+- `GET /api/files` — retrieve a stored file.
+- `GET /api/health` — backend health, storage mode, revision, and record counts.
+
 ## Data and safety
 
 - No credentials or external API calls are included.
 - `public/data/workbook-data.json` is the browser-readable workbook snapshot.
 - `public/config/workflow.json` contains the workflow and permission contract.
 - The original workbook remains unchanged.
-- User changes persist only in browser `localStorage`.
+- User changes persist on the backend and synchronize across browser sessions.
+- `.data/` is intentionally ignored by Git so live operational state and uploaded files are not committed.
 
 ## Included experience
 
@@ -32,5 +52,5 @@ Open `http://localhost:4317`. For hot reload, use `npm run dev`; it uses the sam
 ## Limitations
 
 - Authentication and roles are simulated.
-- Browser storage is not shared multi-user persistence.
 - Imported records may contain operational names, instructions, and links from the source workbook.
+- The included filesystem persistence is designed for a single persistent Node.js server. A multi-instance/cloud deployment should replace it with shared Postgres/object storage while retaining the same API contract.
